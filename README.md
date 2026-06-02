@@ -11,23 +11,25 @@ The script detects your OS automatically: it uses **Homebrew** on macOS and **wi
 ### macOS
 
 ```bash
-cd ~/Downloads        # the folder where you saved the script
-bash setup-snf.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
 ```
 
-> Running via `bash` bypasses the Gatekeeper block on downloaded files.
-> You can pass the email for the SSH key up front: `GIT_EMAIL=you@speedandfunction.com bash setup-snf.sh`
+> Use `bash <(curl …)` rather than `curl … | bash` — the interactive steps (`gh auth login`, email prompt) need a real terminal on stdin.
+> Pass the email for the SSH key up front: prefix with `GIT_EMAIL=you@speedandfunction.com `
 
 ### Windows (PowerShell)
 
 ```powershell
-cd ~\Downloads
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\setup-snf.ps1
+$u="https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.ps1"
+$f="$env:TEMP\setup-snf.ps1"
+irm $u -OutFile $f
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+& $f                          # or:  & $f -GitEmail you@speedandfunction.com
 ```
 
 > `-Scope Process` lifts the script block only for the current terminal window — nothing permanent.
-> Pass the email up front: `.\setup-snf.ps1 -GitEmail you@speedandfunction.com`
+
+Prefer a local file? Download it from the repo (**Download raw file**) and run `bash setup-snf.sh` / `& .\setup-snf.ps1`.
 
 ---
 
@@ -69,7 +71,7 @@ Every step is **idempotent** — anything already installed is skipped, so the s
 
 | Document | Description |
 | --- | --- |
-| [`docs/SETUP-GUID.md`](docs/SETUP-GUIDE.md) | Full guide (English) — detailed steps, troubleshooting, FAQ |
+| [`docs/SETUP-GUIDE.md`](docs/SETUP-GUIDE.md) | Full guide (English) — detailed steps, troubleshooting, FAQ |
 
 
 ---

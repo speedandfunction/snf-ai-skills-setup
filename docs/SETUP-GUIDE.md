@@ -8,7 +8,7 @@ A complete guide to working with the automated setup scripts (`setup-snf.sh` for
 
 1. [What the scripts do](#1-what-the-scripts-do)
 2. [Prerequisites](#2-prerequisites)
-3. [Downloading the script](#3-downloading-the-script)
+3. [Installing the script](#3-installing-the-script)
 4. [Running on macOS](#4-running-on-macos)
 5. [Running on Windows](#5-running-on-windows)
 6. [What happens during the run](#6-what-happens-during-the-run)
@@ -50,9 +50,33 @@ The script detects the operating system on its own: it uses **Homebrew** on macO
 
 ---
 
-## 3. Downloading the script
+## 3. Installing the script
 
-Save the appropriate file to a convenient folder, e.g. `~/Downloads` (macOS) or `Downloads` (Windows):
+The repository is public, so the script can be run with **a single command straight from GitHub** — no need to download anything manually.
+
+**macOS:**
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$u="https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.ps1"
+$f="$env:TEMP\setup-snf.ps1"
+irm $u -OutFile $f
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+& $f
+```
+
+> On macOS use `bash <(curl …)`, **not** `curl … | bash` — the interactive steps (`gh auth login`, email prompt) need a real terminal on stdin, which `bash <(…)` preserves.
+
+Per-OS details, passing the email, and running from a local file are covered in the sections below.
+
+### Alternative — download the file manually
+
+If you'd rather work with a local file: open the file on GitHub and click **Download raw file**, or **Code → Download ZIP** for the whole repo. Save it to a convenient folder (e.g. `~/Downloads`):
 
 - **macOS:** `setup-snf.sh`
 - **Windows:** `setup-snf.ps1`
@@ -61,21 +85,32 @@ Save the appropriate file to a convenient folder, e.g. `~/Downloads` (macOS) or 
 
 ## 4. Running on macOS
 
-Open **Terminal** and change into the folder with the script:
+### Option A — one command from GitHub (recommended)
+
+Nothing to download — open **Terminal** and paste:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
+```
+
+With the email for the SSH key up front:
+
+```bash
+GIT_EMAIL=you@speedandfunction.com bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
+```
+
+> Use `bash <(curl …)`, not `curl … | bash`, otherwise the interactive steps (`gh auth login`, email prompt) break. Bonus: running straight from the network means there's no file on disk, so no Gatekeeper quarantine pops up.
+
+### Option B — from a local file
+
+If you downloaded the script manually, change into its folder and run it via `bash` (this bypasses Gatekeeper for downloaded files):
 
 ```bash
 cd ~/Downloads
-```
-
-### Option A — fastest
-
-```bash
 bash setup-snf.sh
 ```
 
-Running via `bash` bypasses the Gatekeeper block on downloaded files.
-
-### Option B — with execute permission
+### Option C — with execute permission
 
 ```bash
 chmod +x setup-snf.sh
@@ -85,44 +120,38 @@ xattr -d com.apple.quarantine setup-snf.sh   # removes the "downloaded from the 
 
 If `xattr` reports `No such xattr`, there's no quarantine flag — just run `./setup-snf.sh`.
 
-### You can pass the email for the SSH key up front
-
-```bash
-GIT_EMAIL=you@speedandfunction.com bash setup-snf.sh
-```
-
 > **About Xcode:** the full Xcode is **not required**. You only need the **Command Line Tools** — Homebrew will offer to install them automatically during setup. Accept in the pop-up window (or install them in advance: `xcode-select --install`).
 
 ---
 
 ## 5. Running on Windows
 
-There are two paths.
-
 ### Option A — native PowerShell (recommended)
 
-Open **PowerShell**, change into the folder with the script, and allow execution for this session:
+Open **PowerShell** and paste — the command downloads the script from GitHub and runs it:
 
 ```powershell
-cd ~\Downloads
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\setup-snf.ps1
+$u="https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.ps1"
+$f="$env:TEMP\setup-snf.ps1"
+irm $u -OutFile $f
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+& $f
 ```
 
-Or with the email up front:
+To pass the email up front, replace the last line with:
 
 ```powershell
-.\setup-snf.ps1 -GitEmail you@speedandfunction.com
+& $f -GitEmail you@speedandfunction.com
 ```
 
-> `Set-ExecutionPolicy -Scope Process` lifts the block only for the current terminal window — it changes nothing permanently.
+> `Set-ExecutionPolicy -Scope Process` lifts the block only for the current terminal window — nothing permanent. If you downloaded `setup-snf.ps1` manually, just run `& "$HOME\Downloads\setup-snf.ps1"` instead of the first two lines.
 
 ### Option B — bash script in Git Bash / WSL
 
-If you already have **Git Bash** or **WSL**, you can use `setup-snf.sh`:
+If you already have **Git Bash** or **WSL**, you can run the sh version with the same one-liner as on macOS:
 
 ```bash
-bash setup-snf.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
 ```
 
 > On a clean Windows machine without any bash, use Option A (PowerShell), since bash only appears together with Git.
@@ -190,11 +219,15 @@ Handy if something got interrupted halfway — just run it again.
 
 ### macOS: `zsh: operation not permitted`
 
-Gatekeeper blocked the downloaded file. Fix:
+Gatekeeper blocked the downloaded file. Easiest fix — run straight from GitHub (no file on disk, no quarantine):
 
 ```bash
-bash setup-snf.sh
-# or
+bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
+```
+
+If running a local file:
+
+```bash
 xattr -d com.apple.quarantine setup-snf.sh && chmod +x setup-snf.sh && ./setup-snf.sh
 ```
 
