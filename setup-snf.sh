@@ -141,8 +141,8 @@ clone_repo() {
   if [ -d "$REPO_DIR/.git" ]; then
     ok "Repository already cloned into ./$REPO_DIR"
   else
-    log "Cloning $REPO_SSH…"
-    git clone "$REPO_SSH" "$REPO_DIR" \
+    log "Cloning git@github.com:speedandfunction/snf-ai-skills.git…"
+    git clone "git@github.com:speedandfunction/snf-ai-skills.git" "snf-ai-skills" \
       && ok "Done. Open the ./$REPO_DIR folder in Claude Code." \
       || err "Clone failed. Check access to the 'speedandfunction' org and your SSH key."
   fi
