@@ -1,9 +1,12 @@
 #!/bin/bash
 
 # ============================================================
-#  Grafana MCP — macOS installer
+#  Grafana MCP — macOS installer (Claude Code / project-scoped)
 #  Grafana Cloud: https://speedandfunction.grafana.net
-#  Configures: Claude Desktop + Claude Code
+#  Configures: <repo>/.mcp.json  (project-scoped MCP server)
+#  Secret:     ~/.zshenv  →  SNF_GRAFANA_SERVICE_ACCOUNT_API_KEY
+#              referenced from .mcp.json as
+#              ${SNF_GRAFANA_SERVICE_ACCOUNT_API_KEY}
 #  Uses: uvx (recommended by grafana/mcp-grafana)
 # ============================================================
 
@@ -23,17 +26,33 @@ error()  { echo -e "${RED}✗${NC} $1"; exit 1; }
 header() { echo -e "\n${BOLD}$1${NC}"; echo "────────────────────────────────────────"; }
 
 GRAFANA_URL="https://speedandfunction.grafana.net"
+ENV_VAR_NAME="SNF_GRAFANA_SERVICE_ACCOUNT_API_KEY"
+ZSHENV="$HOME/.zshenv"
+
+# Project (working) directory that holds .mcp.json.
+# Override by passing a path as the first argument:
+#   ./install-grafana-mcp.sh /path/to/snf-ai-skills
+PROJECT_DIR="${1:-$HOME/snf-ai-skills}"
+MCP_JSON="$PROJECT_DIR/.mcp.json"
 
 # ────────────────────────────────────────
-header "🔌 Grafana MCP — Installer"
+header "🔌 Grafana MCP — Installer (project-scoped)"
 echo "Grafana Cloud: ${CYAN}$GRAFANA_URL${NC}"
 echo "Method:        ${CYAN}uvx (recommended)${NC}"
-echo "Targets:       ${CYAN}Claude Desktop + Claude Code${NC}"
+echo "Project:       ${CYAN}$PROJECT_DIR${NC}"
+echo "MCP config:    ${CYAN}$MCP_JSON${NC}"
+echo "Secret in:     ${CYAN}$ZSHENV${NC}  →  \$$ENV_VAR_NAME"
 echo ""
 
 # ── Check macOS ──────────────────────────────────────────────
 if [[ "$(uname)" != "Darwin" ]]; then
   error "This script is for macOS only"
+fi
+
+# ── Check project dir ────────────────────────────────────────
+if [[ ! -d "$PROJECT_DIR" ]]; then
+  error "Project directory not found: $PROJECT_DIR
+   Pass the correct path:  ./install-grafana-mcp.sh /path/to/snf-ai-skills"
 fi
 
 # ── Install uv ───────────────────────────────────────────────
@@ -58,7 +77,7 @@ if ! command -v uvx &>/dev/null; then
   error "uvx not found. Try opening a new terminal and re-running the script."
 fi
 
-# Resolve absolute path — Claude Desktop/Code need full path
+# Resolve absolute path — Claude Code needs the full path
 UVX_BIN="$(command -v uvx)"
 ok "uvx: $UVX_BIN"
 
@@ -106,26 +125,44 @@ else
 fi
 rm -f /tmp/grafana_check.json
 
-# ── Configure Claude Desktop ─────────────────────────────────
-header "4/5  Configuring Claude Desktop"
+# ── Store secret in ~/.zshenv ────────────────────────────────
+header "4/5  Storing token in ~/.zshenv"
 
-CLAUDE_DESKTOP_DIR="$HOME/Library/Application Support/Claude"
-CLAUDE_DESKTOP_CONFIG="$CLAUDE_DESKTOP_DIR/claude_desktop_config.json"
-mkdir -p "$CLAUDE_DESKTOP_DIR"
+touch "$ZSHENV"
 
-if [[ -f "$CLAUDE_DESKTOP_CONFIG" ]]; then
-  BACKUP="${CLAUDE_DESKTOP_CONFIG}.backup.$(date +%Y%m%d_%H%M%S)"
-  cp "$CLAUDE_DESKTOP_CONFIG" "$BACKUP"
+# Remove any existing export of this var (idempotent re-run)
+if grep -q "^export ${ENV_VAR_NAME}=" "$ZSHENV" 2>/dev/null; then
+  BACKUP="${ZSHENV}.backup.$(date +%Y%m%d_%H%M%S)"
+  cp "$ZSHENV" "$BACKUP"
+  ok "Backup saved: $BACKUP"
+  # Use a temp file to strip the old line portably
+  grep -v "^export ${ENV_VAR_NAME}=" "$ZSHENV" > "${ZSHENV}.tmp"
+  mv "${ZSHENV}.tmp" "$ZSHENV"
+  log "Replaced existing ${ENV_VAR_NAME} entry"
+fi
+
+printf 'export %s=%q\n' "$ENV_VAR_NAME" "$GRAFANA_TOKEN" >> "$ZSHENV"
+ok "Token written to $ZSHENV as \$$ENV_VAR_NAME"
+
+# Export into the current shell so 'claude mcp list' below can resolve it
+export "${ENV_VAR_NAME}=$GRAFANA_TOKEN"
+
+# ── Configure project .mcp.json ──────────────────────────────
+header "5/5  Configuring $MCP_JSON"
+
+if [[ -f "$MCP_JSON" ]]; then
+  BACKUP="${MCP_JSON}.backup.$(date +%Y%m%d_%H%M%S)"
+  cp "$MCP_JSON" "$BACKUP"
   ok "Backup saved: $BACKUP"
 fi
 
 python3 << PYEOF
 import json, os
 
-config_path   = "$CLAUDE_DESKTOP_CONFIG"
-uvx_bin       = "$UVX_BIN"
-grafana_url   = "$GRAFANA_URL"
-grafana_token = "$GRAFANA_TOKEN"
+config_path = "$MCP_JSON"
+uvx_bin     = "$UVX_BIN"
+grafana_url = "$GRAFANA_URL"
+env_var     = "$ENV_VAR_NAME"
 
 if os.path.exists(config_path):
     with open(config_path, 'r') as f:
@@ -136,98 +173,25 @@ if os.path.exists(config_path):
 else:
     config = {}
 
-if 'mcpServers' not in config:
-    config['mcpServers'] = {}
+config.setdefault('mcpServers', {})
 
+# The token is NOT stored here — Claude Code expands \${env_var}
+# from the environment (sourced via ~/.zshenv) at launch time.
 config['mcpServers']['grafana'] = {
     "command": uvx_bin,
     "args": ["mcp-grafana"],
     "env": {
         "GRAFANA_URL": grafana_url,
-        "GRAFANA_SERVICE_ACCOUNT_TOKEN": grafana_token
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "\${%s}" % env_var
     }
 }
 
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
+    f.write('\n')
 PYEOF
 
-ok "Claude Desktop configured: $CLAUDE_DESKTOP_CONFIG"
-
-# ── Configure Claude Code ────────────────────────────────────
-header "5/5  Configuring Claude Code"
-
-CLAUDE_CODE_CONFIGURED=false
-
-# Try claude CLI first (preferred — works across all config locations)
-if command -v claude &>/dev/null; then
-  log "Claude Code CLI found — adding via 'claude mcp add'..."
-
-  # Remove existing entry if present to avoid duplicates
-  claude mcp remove grafana 2>/dev/null || true
-
-  claude mcp add grafana \
-    --env GRAFANA_URL="$GRAFANA_URL" \
-    --env GRAFANA_SERVICE_ACCOUNT_TOKEN="$GRAFANA_TOKEN" \
-    -- "$UVX_BIN" mcp-grafana
-
-  ok "Claude Code configured via CLI"
-  CLAUDE_CODE_CONFIGURED=true
-fi
-
-# Fallback: write to ~/.claude.json directly
-if [[ "$CLAUDE_CODE_CONFIGURED" == false ]]; then
-  log "Claude Code CLI not found — writing to ~/.claude.json directly..."
-
-  CLAUDE_CODE_CONFIG="$HOME/.claude.json"
-
-  python3 << PYEOF
-import json, os
-
-config_path   = os.path.expanduser("$CLAUDE_CODE_CONFIG")
-uvx_bin       = "$UVX_BIN"
-grafana_url   = "$GRAFANA_URL"
-grafana_token = "$GRAFANA_TOKEN"
-
-if os.path.exists(config_path):
-    with open(config_path, 'r') as f:
-        try:
-            config = json.load(f)
-        except json.JSONDecodeError:
-            config = {}
-else:
-    config = {}
-
-if 'mcpServers' not in config:
-    config['mcpServers'] = {}
-
-config['mcpServers']['grafana'] = {
-    "command": uvx_bin,
-    "args": ["mcp-grafana"],
-    "env": {
-        "GRAFANA_URL": grafana_url,
-        "GRAFANA_SERVICE_ACCOUNT_TOKEN": grafana_token
-    }
-}
-
-with open(config_path, 'w') as f:
-    json.dump(config, f, indent=2)
-PYEOF
-
-  ok "Claude Code configured: $CLAUDE_CODE_CONFIG"
-  CLAUDE_CODE_CONFIGURED=true
-fi
-
-# Verify Claude Code sees the MCP
-if command -v claude &>/dev/null; then
-  echo ""
-  log "Verifying Claude Code MCP list..."
-  if claude mcp list 2>/dev/null | grep -q "grafana"; then
-    ok "Grafana MCP visible in Claude Code"
-  else
-    warn "Could not verify — run 'claude mcp list' manually to check"
-  fi
-fi
+ok "Grafana MCP added to $MCP_JSON (token via \${$ENV_VAR_NAME})"
 
 # ── Done ─────────────────────────────────────────────────────
 echo ""
@@ -236,18 +200,21 @@ echo -e "${GREEN}${BOLD}  ✅  Installation complete!${NC}"
 echo -e "${GREEN}${BOLD}════════════════════════════════════════${NC}"
 echo ""
 echo -e "${BOLD}Configured:${NC}"
-echo "  ✓ Claude Desktop  →  $CLAUDE_DESKTOP_CONFIG"
-if command -v claude &>/dev/null; then
-echo "  ✓ Claude Code     →  via 'claude mcp add'"
-else
-echo "  ✓ Claude Code     →  $HOME/.claude.json"
-fi
+echo "  ✓ Secret      →  $ZSHENV  (\$$ENV_VAR_NAME)"
+echo "  ✓ MCP server  →  $MCP_JSON  (project-scoped)"
+echo ""
+echo -e "${BOLD}Important:${NC}"
+echo "  The token lives only in ~/.zshenv, never in .mcp.json,"
+echo "  so .mcp.json is safe to commit to git."
 echo ""
 echo -e "${BOLD}Next steps:${NC}"
-echo "  Claude Desktop: Quit and reopen the app"
-echo "  Claude Code:    No restart needed — MCP active immediately"
+echo "  1. Open a NEW terminal (so ~/.zshenv is sourced), or run:"
+echo -e "       ${CYAN}source ~/.zshenv${NC}"
+echo "  2. Start Claude Code from the project directory:"
+echo -e "       ${CYAN}cd \"$PROJECT_DIR\" && claude${NC}"
+echo "  3. Approve the project MCP server if Claude Code prompts you."
 echo ""
-echo -e "${BOLD}Verify Claude Code:${NC}"
+echo -e "${BOLD}Verify:${NC}"
 echo "  claude mcp list"
 echo ""
 echo -e "${BOLD}Try asking:${NC}"
