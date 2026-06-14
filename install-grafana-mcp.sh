@@ -77,9 +77,10 @@ if ! command -v uvx &>/dev/null; then
   error "uvx not found. Try opening a new terminal and re-running the script."
 fi
 
-# Resolve absolute path — Claude Code needs the full path
-UVX_BIN="$(command -v uvx)"
-ok "uvx: $UVX_BIN"
+# Confirm uvx is on PATH. We write the bare command "uvx" into .mcp.json
+# (not an absolute path) so the committed config stays portable across
+# machines — each user just needs uvx on their PATH.
+ok "uvx: $(command -v uvx)"
 
 # ── Get token ────────────────────────────────────────────────
 header "2/5  Service Account Token"
@@ -160,7 +161,6 @@ python3 << PYEOF
 import json, os
 
 config_path = "$MCP_JSON"
-uvx_bin     = "$UVX_BIN"
 grafana_url = "$GRAFANA_URL"
 env_var     = "$ENV_VAR_NAME"
 
@@ -178,7 +178,7 @@ config.setdefault('mcpServers', {})
 # The token is NOT stored here — Claude Code expands \${env_var}
 # from the environment (sourced via ~/.zshenv) at launch time.
 config['mcpServers']['grafana'] = {
-    "command": uvx_bin,
+    "command": "uvx",
     "args": ["mcp-grafana"],
     "env": {
         "GRAFANA_URL": grafana_url,
