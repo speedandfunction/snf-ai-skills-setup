@@ -1,34 +1,41 @@
 #!/usr/bin/env bash
 #
-# n8n-mcp-global-setup.sh — install & verify the n8n-mcp server for Claude Code
-#                           at the USER (global) scope on macOS.
+# n8n-mcp-global-setup.sh — install & verify the n8n-mcp server for Claude on macOS,
+#                           across both surfaces:
+#     • Claude Desktop  → ~/Library/Application Support/Claude/claude_desktop_config.json
+#     • Claude Code CLI → user scope in ~/.claude.json (available in every project)
 #
-# Unlike a project-level `.mcp.json` entry, a user-scope server is available in
-# EVERY project you open with Claude Code. It is registered via
-# `claude mcp add --scope user` and stored in ~/.claude.json.
+# The API key lives ONLY in ~/.zshenv as `export SNF_N8N_API_KEY=...`. Neither
+# config file stores the secret:
+#   • Claude Code expands the reference ${SNF_N8N_API_KEY} at launch.
+#   • Claude Desktop is a GUI app that does NOT read ~/.zshenv and does NOT expand
+#     ${VAR}, so the server is launched through a small zsh wrapper
+#         /bin/zsh -lc 'N8N_API_KEY="$SNF_N8N_API_KEY" exec npx -y n8n-mcp'
+#     which sources ~/.zshenv itself and maps the key into the child process.
 #
 # What it does:
-#   1. Checks prerequisites (macOS, Homebrew, Node/npx, Claude Code CLI, login shell).
-#      Missing pieces are offered as Homebrew installs — Claude Code via
-#      `brew install --cask claude-code`.
-#   2. Asks for the n8n API key (hidden input) and stores it in ~/.zshenv as
-#      `export SNF_N8N_API_KEY=...` (idempotent — an existing line is replaced).
-#   3. Registers the `n8n` server at user scope with
-#      `claude mcp add n8n --scope user ... -- npx -y n8n-mcp`.
-#      The key is stored as the reference ${SNF_N8N_API_KEY}, never in plaintext —
-#      Claude Code expands it from the environment at launch.
-#   4. Verifies: env var resolves, n8n REST API answers with the key,
-#      `npx n8n-mcp` starts, and `claude mcp list` reports the server connected.
+#   1. Checks prerequisites (macOS, Homebrew, Node/npx, /bin/zsh, login shell;
+#      Claude Code CLI only if the --code path is used). Missing pieces are offered
+#      as Homebrew installs — Claude Code via `brew install --cask claude-code`.
+#   2. Stores the n8n API key in ~/.zshenv (chmod 600, idempotent).
+#   3. Writes the `n8n` entry into the Claude Desktop config (JSON-merged with the
+#      existing file via node — no jq needed; every other key is preserved).
+#   4. Registers `n8n` at Claude Code user scope via `claude mcp add --scope user`.
+#   5. Verifies: key valid against the n8n REST API, npx starts n8n-mcp, the zsh
+#      wrapper resolves the key, and both configs contain the entry.
 #
-# No jq required — everything goes through the `claude mcp` CLI. Needs only what
-# macOS provides (bash 3.2, curl, sed/grep). Safe to re-run: every step is idempotent.
+# No jq dependency — JSON is edited with node (already required for npx). Needs only
+# what macOS provides (bash 3.2, curl, /bin/zsh) plus Node. Safe to re-run.
 #
 # Usage:
-#   ./n8n-mcp-global-setup.sh                 # full install (interactive)
-#   ./n8n-mcp-global-setup.sh --check         # verification only, no changes
+#   ./n8n-mcp-global-setup.sh                    # set up Desktop + Claude Code (interactive)
+#   ./n8n-mcp-global-setup.sh --check            # verify only, no changes
+#   ./n8n-mcp-global-setup.sh --no-code          # Claude Desktop only
+#   ./n8n-mcp-global-setup.sh --no-desktop       # Claude Code only
+#   ./n8n-mcp-global-setup.sh --desktop-config <path>   # write to a specific file
+#                                                       # (e.g. to prepare a teammate's)
 #   ./n8n-mcp-global-setup.sh --url https://n8n.example.com
-#   ./n8n-mcp-global-setup.sh --force         # re-register even if it already exists
-#   ./n8n-mcp-global-setup.sh --key KEY --yes # non-interactive
+#   ./n8n-mcp-global-setup.sh --key KEY --yes    # non-interactive
 #   echo KEY | ./n8n-mcp-global-setup.sh --yes
 #
 set -euo pipefail
@@ -38,23 +45,31 @@ SERVER_NAME="n8n"
 ENV_VAR="SNF_N8N_API_KEY"
 N8N_API_URL="https://n8n.gluzdov.com"
 ZSHENV="$HOME/.zshenv"
+DESKTOP_CFG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
 
 CHECK_ONLY=0
 FORCE=0
 CLI_KEY=""
 ASSUME_YES=0
+DO_DESKTOP=1
+DO_CODE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --check)          CHECK_ONLY=1; shift ;;
+    --check)           CHECK_ONLY=1; shift ;;
     --force|--force-key) FORCE=1; shift ;;
-    --key)            CLI_KEY="${2:?--key needs a value}"; shift 2 ;;
-    --yes|-y)         ASSUME_YES=1; shift ;;
-    --url)            N8N_API_URL="${2:?--url needs a value}"; shift 2 ;;
-    -h|--help)        sed -n '2,33p' "$0"; exit 0 ;;
+    --key)             CLI_KEY="${2:?--key needs a value}"; shift 2 ;;
+    --yes|-y)          ASSUME_YES=1; shift ;;
+    --url)             N8N_API_URL="${2:?--url needs a value}"; shift 2 ;;
+    --desktop-config)  DESKTOP_CFG="${2:?--desktop-config needs a value}"; shift 2 ;;
+    --no-desktop)      DO_DESKTOP=0; shift ;;
+    --no-code)         DO_CODE=0; shift ;;
+    -h|--help)         sed -n '2,45p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+
+[[ $DO_DESKTOP -eq 1 || $DO_CODE -eq 1 ]] || { echo "Nothing to do: --no-desktop and --no-code together." >&2; exit 2; }
 
 # ---------------------------------------------------------------------- helpers
 BOLD=$'\033[1m'; RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
@@ -86,6 +101,38 @@ confirm() { # confirm "question" -> 0 yes / 1 no
   [[ "$reply" == [yY]* ]]
 }
 
+# The zsh wrapper the Desktop config launches. Sourcing ~/.zshenv happens
+# automatically for every zsh; -l also loads the profile so npx is on PATH.
+WRAPPER_ARG='N8N_API_KEY="$'"$ENV_VAR"'" exec npx -y n8n-mcp'
+
+# desktop_write <config-path> <url> — JSON-merge the n8n entry via node (no jq).
+# Creates the file if missing, preserves every other key, errors on non-object JSON.
+desktop_write() {
+  local tmp; tmp="$(mktemp)"
+  cat > "$tmp" <<'JS'
+const fs = require('fs');
+const [, , path, url, wrapper] = process.argv;
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(path, 'utf8')); }
+catch (e) { if (e.code !== 'ENOENT') { console.error('NOT_JSON:' + e.message); process.exit(3); } }
+if (cfg === null || typeof cfg !== 'object' || Array.isArray(cfg)) { console.error('NOT_OBJECT'); process.exit(3); }
+if (cfg.mcpServers === null || typeof cfg.mcpServers !== 'object' || Array.isArray(cfg.mcpServers)) cfg.mcpServers = {};
+cfg.mcpServers.n8n = {
+  command: '/bin/zsh',
+  args: ['-lc', wrapper],
+  env: { MCP_MODE: 'stdio', LOG_LEVEL: 'error', DISABLE_CONSOLE_OUTPUT: 'true', N8N_API_URL: url }
+};
+fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
+JS
+  node "$tmp" "$1" "$2" "$WRAPPER_ARG"; local rc=$?
+  rm -f "$tmp"; return $rc
+}
+
+# desktop_has_n8n <config-path> — exit 0 if mcpServers.n8n exists
+desktop_has_n8n() {
+  node -e 'try{const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(c&&c.mcpServers&&c.mcpServers.n8n?0:1)}catch(e){process.exit(1)}' "$1" 2>/dev/null
+}
+
 # ------------------------------------------------------------- 1. prerequisites
 info "Checking prerequisites"
 
@@ -97,7 +144,6 @@ if command -v brew >/dev/null 2>&1; then
   HAS_BREW=1
 else
   HAS_BREW=0
-  # Installed but not on PATH yet? Add it for this run.
   for BREW_BIN in /opt/homebrew/bin/brew /usr/local/bin/brew; do
     if [[ -x "$BREW_BIN" ]]; then
       eval "$("$BREW_BIN" shellenv)"
@@ -112,18 +158,23 @@ else
   fi
 fi
 
-# brew_install <formula-args...> — install and refresh the command hash table
-brew_install() {
+brew_install() { # brew_install <formula-args...>
   [[ $HAS_BREW -eq 1 ]] || return 1
   brew install "$@" || return 1
   hash -r 2>/dev/null || true
 }
 
-# Node / npx — n8n-mcp runs via `npx n8n-mcp`
-if command -v npx >/dev/null 2>&1; then
-  ok "Node $(node --version 2>/dev/null || echo '?') / npx $(npx --version 2>/dev/null || echo '?')"
+# /bin/zsh — the Desktop wrapper launches the server through it (macOS default shell)
+if [[ $DO_DESKTOP -eq 1 ]]; then
+  [[ -x /bin/zsh ]] && ok "/bin/zsh present (used by the Desktop launch wrapper)" \
+                    || bad "/bin/zsh not found — required for the Claude Desktop wrapper"
+fi
+
+# Node / npx — n8n-mcp runs via `npx n8n-mcp`, and we edit JSON with node
+if command -v npx >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  ok "Node $(node --version 2>/dev/null) / npx $(npx --version 2>/dev/null)"
 else
-  bad "npx not found — n8n-mcp is run through npx"
+  bad "Node/npx not found — required to run n8n-mcp and to edit the Desktop config"
   if [[ $CHECK_ONLY -eq 0 ]] && confirm "Install Node via Homebrew (brew install node)?"; then
     brew_install node && { ok "Node $(node --version 2>/dev/null)"; FAILURES=$((FAILURES - 1)); } \
       || die "Node install failed. Install it manually:  brew install node"
@@ -133,54 +184,53 @@ else
   fi
 fi
 
-# Claude Code CLI
-if command -v claude >/dev/null 2>&1; then
-  ok "Claude Code $(claude --version 2>/dev/null | head -1)"
-else
-  bad "Claude Code CLI (\`claude\`) not found"
-  if [[ $CHECK_ONLY -eq 0 ]]; then
-    if confirm "Install Claude Code via Homebrew (brew install --cask claude-code)?"; then
-      [[ $HAS_BREW -eq 1 ]] || die "Homebrew is required for this. Install Homebrew first (see above), then re-run."
+# Claude Code CLI — only needed for the --code path
+if [[ $DO_CODE -eq 1 ]]; then
+  if command -v claude >/dev/null 2>&1; then
+    ok "Claude Code $(claude --version 2>/dev/null | head -1)"
+  else
+    warn "Claude Code CLI (\`claude\`) not found"
+    if [[ $CHECK_ONLY -eq 0 && $HAS_BREW -eq 1 ]] && confirm "Install Claude Code via Homebrew (brew install --cask claude-code)?"; then
       brew install --cask claude-code || die "Claude Code install failed."
       hash -r 2>/dev/null || true
-      command -v claude >/dev/null 2>&1 \
-        && { ok "Claude Code installed: $(claude --version 2>/dev/null | head -1)"; FAILURES=$((FAILURES - 1)); } \
+      command -v claude >/dev/null 2>&1 && ok "Claude Code installed: $(claude --version 2>/dev/null | head -1)" \
         || die "Install finished but \`claude\` is still not on PATH — open a new terminal and re-run."
     else
-      die "Claude Code is required. Install it with:  brew install --cask claude-code"
+      warn "skipping Claude Code setup (install it with: brew install --cask claude-code, or pass --no-code)"
+      DO_CODE=0
     fi
-  else
-    echo "     Install with:  brew install --cask claude-code"
   fi
+fi
+
+# Claude Desktop app — config is pointless without it (non-fatal: you may be
+# preparing a config for another machine via --desktop-config)
+if [[ $DO_DESKTOP -eq 1 ]]; then
+  [[ -d /Applications/Claude.app ]] && ok "Claude Desktop app installed" \
+    || warn "Claude Desktop app not found in /Applications (writing config anyway)"
 fi
 
 # Login shell — ~/.zshenv is only sourced by zsh
 case "${SHELL:-}" in
   *zsh) ok "login shell is zsh — $ZSHENV will be sourced" ;;
   "")   warn "\$SHELL is unset — make sure $ZSHENV is sourced by your login shell" ;;
-  *)    warn "login shell is $SHELL, not zsh — $ZSHENV will NOT be sourced automatically."
-        echo "     Either switch to zsh (default on macOS since 10.15) or add this line to your"
-        echo "     shell's rc file:  source $ZSHENV" ;;
+  *)    warn "login shell is $SHELL, not zsh. The Desktop wrapper still uses /bin/zsh, but"
+        echo "     for Claude Code make sure you launch it from a shell that sources $ZSHENV." ;;
 esac
 
 # ------------------------------------------------------------------- 2. API key
 info "n8n API key (\$$ENV_VAR in $ZSHENV)"
 
-# Value already exported in this shell, or persisted in ~/.zshenv?
 KEY_IN_ENV="${!ENV_VAR:-}"
 KEY_IN_FILE=""
 if [[ -f "$ZSHENV" ]] && grep -qE "^[[:space:]]*export[[:space:]]+$ENV_VAR=" "$ZSHENV"; then
   KEY_IN_FILE="$(grep -E "^[[:space:]]*export[[:space:]]+$ENV_VAR=" "$ZSHENV" | tail -1 | cut -d= -f2- | tr -d "\"' ")"
 fi
-
 API_KEY="${KEY_IN_FILE:-$KEY_IN_ENV}"
 
 if [[ $CHECK_ONLY -eq 1 ]]; then
   [[ -n "$KEY_IN_FILE" ]] && ok "key present in $ZSHENV (${#KEY_IN_FILE} chars)" || bad "no \`export $ENV_VAR=\` line in $ZSHENV"
-  [[ -n "$KEY_IN_ENV" ]]  && ok "\$$ENV_VAR resolves in this shell"            || bad "\$$ENV_VAR is not set in this shell (source $ZSHENV or open a new terminal)"
+  [[ -n "$KEY_IN_ENV" ]]  && ok "\$$ENV_VAR resolves in this shell"            || warn "\$$ENV_VAR not set in this shell (source $ZSHENV or open a new terminal)"
 else
-  # Decide whether we need to obtain/replace the key. --key always replaces;
-  # otherwise an existing key is kept (--force re-registers the server, not the key).
   NEW_KEY=""
   if [[ -n "$CLI_KEY" ]]; then
     NEW_KEY="$CLI_KEY"; ok "using key passed via --key (replacing any existing one)"
@@ -207,7 +257,6 @@ else
     [[ -n "$NEW_KEY" ]] || die "Empty key — aborting."
     touch "$ZSHENV"; chmod 600 "$ZSHENV"
     cp "$ZSHENV" "$ZSHENV.bak.$(date +%Y%m%d%H%M%S)"
-    # drop any previous line for this var, then append the new one
     grep -vE "^[[:space:]]*export[[:space:]]+$ENV_VAR=" "$ZSHENV" > "$ZSHENV.tmp" || true
     mv "$ZSHENV.tmp" "$ZSHENV"; chmod 600 "$ZSHENV"
     printf '\n# n8n MCP (%s)\nexport %s="%s"\n' "$N8N_API_URL" "$ENV_VAR" "$NEW_KEY" >> "$ZSHENV"
@@ -216,104 +265,131 @@ else
   fi
 fi
 
-# --------------------------------------------------- 3. register at user scope
-info "Registering \"$SERVER_NAME\" MCP server at user (global) scope"
+# ------------------------------------------------- 3. Claude Desktop config file
+if [[ $DO_DESKTOP -eq 1 ]]; then
+  info "Claude Desktop config ($DESKTOP_CFG)"
 
-if [[ $CHECK_ONLY -eq 1 ]]; then
-  if claude mcp get "$SERVER_NAME" >/dev/null 2>&1; then
-    ok "\"$SERVER_NAME\" is registered"
-    claude mcp get "$SERVER_NAME" 2>/dev/null \
-      | grep -iE 'scope|command|args|N8N_API_URL|MCP_MODE' | sed 's/^/     /' || true
-    # If jq + ~/.claude.json available, confirm the key is a reference, not plaintext.
-    if command -v jq >/dev/null 2>&1 && [[ -f "$HOME/.claude.json" ]]; then
-      kref="$(jq -r --arg n "$SERVER_NAME" '.mcpServers[$n].env.N8N_API_KEY // empty' "$HOME/.claude.json" 2>/dev/null)"
-      case "$kref" in
-        '${'*'}') ok "N8N_API_KEY stored as env reference ($kref) — no plaintext secret" ;;
-        "")       : ;;  # not at user scope in ~/.claude.json; nothing to assert
-        *)        bad "N8N_API_KEY looks like a literal value in ~/.claude.json — re-run without --check to fix" ;;
-      esac
+  if [[ $CHECK_ONLY -eq 1 ]]; then
+    if [[ -f "$DESKTOP_CFG" ]] && desktop_has_n8n "$DESKTOP_CFG"; then
+      ok "\"$SERVER_NAME\" entry present"
+      node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const n=c.mcpServers.n8n;console.log("     command: "+n.command);console.log("     args:    "+JSON.stringify(n.args));console.log("     env:     "+JSON.stringify(n.env));' "$DESKTOP_CFG" 2>/dev/null || true
+      node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const s=JSON.stringify(c.mcpServers.n8n);process.exit(/N8N_API_KEY"?\s*:\s*"(?!\$)/.test(s)?1:0)' "$DESKTOP_CFG" 2>/dev/null \
+        && ok "no plaintext key in the config (key comes from \$$ENV_VAR via the zsh wrapper)" \
+        || bad "the config appears to contain a literal N8N_API_KEY value"
+    else
+      bad "no \"$SERVER_NAME\" entry in $DESKTOP_CFG (run without --check to add it)"
     fi
   else
-    bad "\"$SERVER_NAME\" is not registered (run without --check to add it)"
-  fi
-else
-  if claude mcp get "$SERVER_NAME" >/dev/null 2>&1; then
-    if [[ $FORCE -eq 1 ]]; then
-      claude mcp remove "$SERVER_NAME" --scope user >/dev/null 2>&1 \
-        || claude mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
-      ok "removed existing \"$SERVER_NAME\" registration (--force)"
-    else
-      ok "\"$SERVER_NAME\" already registered — use --force to re-register"
+    DCFG_DIR="$(dirname "$DESKTOP_CFG")"
+    mkdir -p "$DCFG_DIR" 2>/dev/null || mkdir -p "$DESKTOP_CFG/../" 2>/dev/null || true
+    [[ -d "$DCFG_DIR" ]] || die "Cannot create config directory: $DCFG_DIR"
+    if [[ -f "$DESKTOP_CFG" ]]; then
+      node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$DESKTOP_CFG" 2>/dev/null \
+        || die "$DESKTOP_CFG exists but is not valid JSON — fix or move it, then re-run."
+      if desktop_has_n8n "$DESKTOP_CFG" && [[ $FORCE -eq 0 ]]; then
+        ok "\"$SERVER_NAME\" already present — refreshing entry"
+      fi
+      cp "$DESKTOP_CFG" "$DESKTOP_CFG.bak.$(date +%Y%m%d%H%M%S)"
     fi
-  fi
-
-  if ! claude mcp get "$SERVER_NAME" >/dev/null 2>&1; then
-    # NOTE: single-quote the key env so the shell does NOT expand ${SNF_N8N_API_KEY};
-    # Claude Code stores the literal reference and expands it at launch time.
-    claude mcp add "$SERVER_NAME" --scope user \
-      -e MCP_MODE=stdio \
-      -e LOG_LEVEL=error \
-      -e DISABLE_CONSOLE_OUTPUT=true \
-      -e "N8N_API_URL=$N8N_API_URL" \
-      -e 'N8N_API_KEY=${'"$ENV_VAR"'}' \
-      -- npx -y n8n-mcp \
-      && ok "registered \"$SERVER_NAME\" at user scope (key referenced as \${$ENV_VAR})" \
-      || die "\`claude mcp add\` failed."
+    desktop_write "$DESKTOP_CFG" "$N8N_API_URL" \
+      && ok "\"$SERVER_NAME\" merged into Desktop config (no secret in file; launched via /bin/zsh wrapper)" \
+      || die "Failed to write $DESKTOP_CFG"
+    [[ -f "$DESKTOP_CFG.bak."* ]] 2>/dev/null && echo "     ${DIM}backup kept alongside${RST}" || true
+    warn "restart Claude Desktop completely (Cmd+Q, then reopen) to load the new server"
   fi
 fi
 
-# ------------------------------------------------------------- 4. verification
+# --------------------------------------------- 4. Claude Code (user scope)
+if [[ $DO_CODE -eq 1 ]]; then
+  info "Claude Code user (global) scope"
+
+  if [[ $CHECK_ONLY -eq 1 ]]; then
+    if claude mcp get "$SERVER_NAME" >/dev/null 2>&1; then
+      ok "\"$SERVER_NAME\" is registered"
+      claude mcp get "$SERVER_NAME" 2>/dev/null | grep -iE 'scope|command|args|N8N_API_URL' | sed 's/^/     /' || true
+    else
+      bad "\"$SERVER_NAME\" is not registered (run without --check to add it)"
+    fi
+  else
+    if claude mcp get "$SERVER_NAME" >/dev/null 2>&1; then
+      if [[ $FORCE -eq 1 ]]; then
+        claude mcp remove "$SERVER_NAME" --scope user >/dev/null 2>&1 || claude mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
+        ok "removed existing registration (--force)"
+      else
+        ok "\"$SERVER_NAME\" already registered — use --force to re-register"
+      fi
+    fi
+    if ! claude mcp get "$SERVER_NAME" >/dev/null 2>&1; then
+      # single-quote the key env so the shell does NOT expand it; Claude Code stores
+      # the literal reference and expands it at launch.
+      claude mcp add "$SERVER_NAME" --scope user \
+        -e MCP_MODE=stdio -e LOG_LEVEL=error -e DISABLE_CONSOLE_OUTPUT=true \
+        -e "N8N_API_URL=$N8N_API_URL" \
+        -e 'N8N_API_KEY=${'"$ENV_VAR"'}' \
+        -- npx -y n8n-mcp \
+        && ok "registered at user scope (key referenced as \${$ENV_VAR})" \
+        || die "\`claude mcp add\` failed."
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------- 5. verification
 info "Verification"
 
-# 4a. n8n REST API reachable and the key accepted
+# 5a. n8n REST API reachable and the key accepted
 VERIFY_KEY="${!ENV_VAR:-$API_KEY}"
 if [[ -z "${VERIFY_KEY:-}" ]]; then
   warn "skipping API check — no key available in this shell"
 else
   HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
-    -H "X-N8N-API-KEY: $VERIFY_KEY" \
-    "$N8N_API_URL/api/v1/workflows?limit=1" || echo 000)"
+    -H "X-N8N-API-KEY: $VERIFY_KEY" "$N8N_API_URL/api/v1/workflows?limit=1" || echo 000)"
   case "$HTTP_CODE" in
     200) ok "n8n API $N8N_API_URL responded 200 — key is valid" ;;
-    401|403) bad "n8n API rejected the key (HTTP $HTTP_CODE) — regenerate it and re-run with --force" ;;
+    401|403) bad "n8n API rejected the key (HTTP $HTTP_CODE) — regenerate it and re-run with --key <new>" ;;
     000) bad "could not reach $N8N_API_URL (network/VPN/DNS?)" ;;
     *)   bad "n8n API returned HTTP $HTTP_CODE" ;;
   esac
 fi
 
-# 4b. n8n-mcp package starts under npx
+# 5b. the zsh wrapper (what Desktop runs) resolves the key from ~/.zshenv + finds npx
+if [[ $DO_DESKTOP -eq 1 && -x /bin/zsh ]]; then
+  WRAP_OUT="$(env -i HOME="$HOME" /bin/zsh -lc 'printf "%s|%s" "${#'"$ENV_VAR"'}" "$(command -v npx || true)"' 2>/dev/null || true)"
+  WRAP_LEN="${WRAP_OUT%%|*}"; WRAP_NPX="${WRAP_OUT#*|}"
+  if [[ "${WRAP_LEN:-0}" -gt 0 && -n "$WRAP_NPX" ]]; then
+    ok "Desktop wrapper OK — /bin/zsh -l resolves \$$ENV_VAR (${WRAP_LEN} chars) and finds npx"
+  else
+    [[ "${WRAP_LEN:-0}" -gt 0 ]] || bad "Desktop wrapper: \$$ENV_VAR not set from ~/.zshenv in a fresh zsh login shell"
+    [[ -n "$WRAP_NPX" ]]         || bad "Desktop wrapper: npx not on PATH in a fresh zsh login shell (Node PATH not in ~/.zprofile/.zshrc?)"
+  fi
+fi
+
+# 5c. n8n-mcp package starts under npx
 if command -v npx >/dev/null 2>&1; then
-  printf '  %s…%s fetching/starting n8n-mcp via npx (first run downloads the package, may take a minute)\n' "$DIM" "$RST"
-  MCP_VER="$(MCP_MODE=stdio LOG_LEVEL=error DISABLE_CONSOLE_OUTPUT=true \
-             npx -y n8n-mcp --version 2>/dev/null | tail -1 || true)"
-  if [[ -n "$MCP_VER" ]]; then
-    ok "n8n-mcp runs via npx (${MCP_VER})"
-  elif npx -y n8n-mcp --help >/dev/null 2>&1; then
+  printf '  %s…%s starting n8n-mcp via npx (first run downloads the package, may take a minute)\n' "$DIM" "$RST"
+  if MCP_MODE=stdio LOG_LEVEL=error DISABLE_CONSOLE_OUTPUT=true npx -y n8n-mcp --version >/dev/null 2>&1 \
+     || npx -y n8n-mcp --help >/dev/null 2>&1; then
     ok "n8n-mcp resolves and starts via npx"
   else
     bad "\`npx -y n8n-mcp\` failed — check network / npm registry access"
   fi
 fi
 
-# 4c. Claude Code sees the server
-if command -v claude >/dev/null 2>&1; then
+# 5d. Claude Code sees the server
+if [[ $DO_CODE -eq 1 ]] && command -v claude >/dev/null 2>&1; then
   if MCP_LIST="$(claude mcp list 2>&1)"; then
     LINE="$(grep -iE "(^|[[:space:]/])$SERVER_NAME:" <<<"$MCP_LIST" | head -1)"
-    if [[ -n "$LINE" ]]; then
-      ok "\`claude mcp list\` reports \"$SERVER_NAME\""
-      echo "     ${LINE#"${LINE%%[![:space:]]*}"}"
-    else
-      warn "\"$SERVER_NAME\" not listed yet — restart Claude Code to pick it up"
-    fi
-  else
-    warn "\`claude mcp list\` failed:"; sed 's/^/     /' <<<"$MCP_LIST"
+    [[ -n "$LINE" ]] && { ok "\`claude mcp list\` reports \"$SERVER_NAME\""; echo "     ${LINE#"${LINE%%[![:space:]]*}"}"; } \
+                     || warn "\"$SERVER_NAME\" not listed yet — restart Claude Code to pick it up"
   fi
 fi
 
-# ------------------------------------------------------------------ 5. summary
+# ------------------------------------------------------------------ 6. summary
 echo
 if [[ $FAILURES -eq 0 ]]; then
-  printf '%s✓ n8n MCP is set up globally (user scope).%s\n' "$GRN$BOLD" "$RST"
+  printf '%s✓ n8n MCP set up%s%s%s.%s\n' "$GRN$BOLD" \
+    "$([[ $DO_DESKTOP -eq 1 ]] && echo ' for Claude Desktop')" \
+    "$([[ $DO_DESKTOP -eq 1 && $DO_CODE -eq 1 ]] && echo ' and')" \
+    "$([[ $DO_CODE -eq 1 ]] && echo ' Claude Code (user scope)')" "$RST"
 else
   printf '%s✗ %d check(s) failed — see above.%s\n' "$RED$BOLD" "$FAILURES" "$RST"
 fi
@@ -322,13 +398,19 @@ cat <<EOF
 
 ${BOLD}Next steps${RST}
   1. Open a NEW terminal (or run: source $ZSHENV) so \$$ENV_VAR is exported.
-     Claude Code must be launched from a shell that sources ~/.zshenv —
-     otherwise \${$ENV_VAR} expands to nothing and the server fails auth.
-  2. Start Claude Code in ANY project:  claude
-  3. Inside the session run  /mcp  and confirm "$SERVER_NAME" is connected
-     (expect ~39 tools). Details:  claude mcp get $SERVER_NAME
-  4. Re-verify any time:  $(basename "$0") --check
-  5. To remove it later:  claude mcp remove $SERVER_NAME --scope user
+EOF
+[[ $DO_DESKTOP -eq 1 ]] && cat <<EOF
+  2. ${BOLD}Claude Desktop:${RST} fully quit (Cmd+Q) and reopen it — the config is read
+     only at launch. Then check Settings → Developer for the "$SERVER_NAME" server.
+EOF
+[[ $DO_CODE -eq 1 ]] && cat <<EOF
+  3. ${BOLD}Claude Code:${RST} start \`claude\` in any project, run  /mcp , confirm "$SERVER_NAME"
+     is connected (~39 tools).  Details:  claude mcp get $SERVER_NAME
+EOF
+cat <<EOF
+  •  Re-verify any time:  $(basename "$0") --check
+  •  Remove later:  claude mcp remove $SERVER_NAME --scope user   (Claude Code)
+     and delete the "$SERVER_NAME" block from $DESKTOP_CFG   (Desktop)
 EOF
 
 exit $(( FAILURES > 0 ? 1 : 0 ))
