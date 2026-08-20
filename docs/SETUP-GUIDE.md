@@ -31,10 +31,13 @@ A single run installs and configures everything needed to work with the `snf-ai-
 | 3 | Installs **GitHub CLI** (`gh`) |
 | 4 | Installs **Node.js (LTS)** — required for MCP servers |
 | 5 | Generates an **SSH key** (if one doesn't exist yet) |
-| 6 | Authenticates `gh` with GitHub |
-| 7 | Adds the SSH key to your GitHub account |
-| 8 | Clones the `snf-ai-skills` repository |
-| 9 | Prints the versions of the installed tools for verification |
+| 6 | Authenticates `gh` with GitHub — SSH protocol, requesting the `admin:public_key` scope that step 7 needs |
+| 7 | Adds the SSH key to your GitHub account (skipped if that exact key is already there) |
+| 8 | Verifies SSH access to GitHub and repository visibility **before** cloning |
+| 9 | Clones the `snf-ai-skills` repository into `~/snf-ai-skills` (override: `TARGET_DIR` / `-TargetDir`) |
+| 10 | Prints the versions of the installed tools for verification |
+
+If a step fails, the script stops there with an actionable message rather than continuing and reporting success.
 
 The script detects the operating system on its own: it uses **Homebrew** on macOS and **winget** on Windows.
 
@@ -176,10 +179,7 @@ Each step is **idempotent**: if a tool is already installed, the script detects 
 A few steps can't be done silently — they require your input:
 
 1. **Email for the SSH key** — if you didn't pass it via `GIT_EMAIL` / `-GitEmail`, the script will ask for it in the console.
-2. **`gh auth login`** — the GitHub authentication flow opens. Choose:
-   - `GitHub.com`
-   - the **SSH** protocol
-   - authentication **via the browser**
+2. **`gh auth login`** — a browser window opens for GitHub authentication. You only need to paste the one-time code and approve the request; the script pins the host, the **SSH** protocol and the `admin:public_key` scope itself, so there is no protocol menu to get wrong. (Picking HTTPS here used to produce a token without `admin:public_key`, which broke the key upload and then the clone.)
 3. **Confirming the Command Line Tools installation** (macOS only, if they're not present yet).
 
 ---
@@ -259,6 +259,7 @@ PATH hasn't refreshed yet. **Close and open a new terminal** and run the script 
 
 - Make sure you've been added to the `speedandfunction` GitHub organization.
 - Make sure the SSH key was added to GitHub (the script does this; manually: `gh ssh-key add ~/.ssh/id_ed25519.pub`).
+- If that command reports `insufficient OAuth scopes`, your `gh` token is missing `admin:public_key`. Fix it with `gh auth refresh -h github.com -s admin:public_key`, then re-run the script.
 - Test the connection: `ssh -T git@github.com`.
 
 ### MCP servers won't connect in Claude Code
@@ -282,7 +283,7 @@ No. It only adds what's missing and doesn't touch what's already configured. An 
 On clean Linux/WSL, `setup-snf.sh` will exit with a message, because the guide targets macOS and Windows (Claude Desktop exists only for them). On Linux, install git/gh/node manually via `apt`.
 
 **Where do I change the repository name or path?**
-At the top of the script — the `Configuration` block (variables `REPO_SSH`, `REPO_DIR`).
+For a one-off run, pass the destination in: `TARGET_DIR=/path/to/checkout` on macOS, `-TargetDir C:\path\to\checkout` on Windows. To change the default, edit the `Configuration` block at the top of the script (`REPO_SSH`, `REPO_ORG`, `REPO_NAME`, `TARGET_DIR`).
 
 ---
 

@@ -14,8 +14,9 @@ The script detects your OS automatically: it uses **Homebrew** on macOS and **wi
 bash <(curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/setup-snf.sh)
 ```
 
-> Use `bash <(curl …)` rather than `curl … | bash` — the interactive steps (`gh auth login`, email prompt) need a real terminal on stdin.
+> Use `bash <(curl …)` rather than `curl … | bash` — the interactive steps (`gh auth login`, email prompt) need a real terminal on stdin. The script detects the `curl … | bash` form and tells you so instead of failing silently.
 > Pass the email for the SSH key up front: prefix with `GIT_EMAIL=you@speedandfunction.com `
+> Clone somewhere other than `~/snf-ai-skills`: prefix with `TARGET_DIR=/path/to/checkout `
 
 ### Windows (PowerShell)
 
@@ -26,6 +27,8 @@ irm $u -OutFile $f
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 & $f                          # or:  & $f -GitEmail you@speedandfunction.com
 ```
+
+> Clone somewhere other than `$HOME\snf-ai-skills`: add `-TargetDir C:\path\to\checkout`
 
 > `-Scope Process` lifts the script block only for the current terminal window — nothing permanent.
 
@@ -40,12 +43,15 @@ Prefer a local file? Download it from the repo (**Download raw file**) and run `
 3. Installs **GitHub CLI** (`gh`)
 4. Installs **Node.js (LTS)** — required for MCP servers
 5. Generates an **SSH key** (if one doesn't exist yet)
-6. Authenticates `gh` with GitHub
-7. Adds the SSH key to your GitHub account
-8. Clones the **snf-ai-skills** repository
-9. Prints installed tool versions for verification
+6. Authenticates `gh` with GitHub (SSH protocol, requesting the `admin:public_key` scope needed for step 7)
+7. Adds the SSH key to your GitHub account — skipped if that exact key is already on the account
+8. Verifies that SSH to GitHub actually works and that you can see the repo, **before** attempting the clone
+9. Clones the **snf-ai-skills** repository into `~/snf-ai-skills` (override with `TARGET_DIR` / `-TargetDir`)
+10. Prints installed tool versions for verification
 
 Every step is **idempotent** — anything already installed is skipped, so the script is safe to re-run if something gets interrupted.
+
+If any step fails, the script **stops there** with an actionable message. It never prints "Setup complete" over a failure.
 
 ---
 
@@ -84,6 +90,7 @@ Every step is **idempotent** — anything already installed is skipped, so the s
 | Windows `running scripts is disabled` | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` |
 | `command not found` for git/gh/node | Open a new terminal (PATH refresh) and re-run |
 | `Permission denied (publickey)` | Confirm org access; `ssh -T git@github.com` to test |
+| `insufficient OAuth scopes` when adding the key | `gh auth refresh -h github.com -s admin:public_key`, then re-run |
 
 Full troubleshooting lives in the [docs](docs/SETUP-GUIDE.md#10-troubleshooting).
 
