@@ -11,8 +11,9 @@
 #                             or, with PLAYWRIGHT_MCP_BROWSER=chromium, Playwright's own
 #                             Chromium build instead (~190 MB, macOS 14+)
 #   • @playwright/mcp       — into its own folder, not a global npm install
-# Then writes the "playwright" server into Claude Desktop's config and checks that
-# the server starts and can actually open a page in Chrome.
+# Then writes the "playwright" server into Claude Desktop's config, registers the
+# same server for the Claude Code CLI (user scope) when `claude` is installed, and
+# checks that the server starts and can actually open a page.
 #
 # Idempotent: every step checks first and skips what is already in place. The
 # Claude Desktop config is rewritten only when the "playwright" entry differs, and
@@ -449,6 +450,61 @@ ensure_desktop_config() {
   CHANGED_RUNTIME=1
 }
 
+# ──────────────────────────────── Claude Code CLI ─────────────────────────
+# Claude Code keeps its own MCP list (~/.claude.json, or $CLAUDE_CONFIG_DIR) and
+# never reads Claude Desktop's config. Registering at user scope makes the server
+# available to `claude` in every folder, and to the Desktop app's Code tab.
+find_claude_cli() {
+  local c
+  for c in "$(command -v claude 2>/dev/null || true)" "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+    [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  return 0
+}
+
+# Prints same | different | missing for the user-scope entry. Read-only: writes
+# go through `claude mcp`, which owns that file.
+claude_code_state() {
+  "$NODE_BIN" -e '
+const fs = require("fs"), path = require("path"), os = require("os");
+const [name, command, ...args] = process.argv.slice(1);
+const file = path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), ".claude.json");
+let s;
+try { const c = JSON.parse(fs.readFileSync(file, "utf8")); s = c.mcpServers && c.mcpServers[name]; } catch (e) {}
+console.log(!s ? "missing" : s.command === command && JSON.stringify(s.args || []) === JSON.stringify(args) ? "same" : "different");
+' "$SERVER_NAME" "$LAUNCHER" "${SERVER_ARGS[@]}"
+}
+
+ensure_claude_code() {
+  local cli state out
+  cli="$(find_claude_cli)"
+  if [ -z "$cli" ]; then
+    warn "Claude Code CLI (\`claude\`) not found — skipped. Re-run the script after installing it."
+    return 0
+  fi
+  state="$(claude_code_state)"
+  if [ "$state" = "same" ]; then
+    ok "Claude Code CLI already has the \"$SERVER_NAME\" server (user scope)"
+    return
+  fi
+  if [ "$CHECK_ONLY" -eq 1 ]; then
+    bad "Claude Code CLI: \"$SERVER_NAME\" user-scope entry is $state"
+    return
+  fi
+  if [ "$state" = "different" ]; then
+    out="$("$cli" mcp remove "$SERVER_NAME" --scope user </dev/null 2>&1)" \
+      || die "Could not replace the existing Claude Code entry: $out"
+  fi
+  out="$("$cli" mcp add --scope user "$SERVER_NAME" -- "$LAUNCHER" "${SERVER_ARGS[@]}" </dev/null 2>&1)" \
+    || die "\`claude mcp add\` failed: $out"
+  [ "$(claude_code_state)" = "same" ] || die "\`claude mcp add\` reported success, but the entry is not in the Claude Code config."
+  if [ "$state" = "different" ]; then
+    ok "Replaced the existing \"$SERVER_NAME\" server in Claude Code CLI (user scope)"
+  else
+    ok "Added \"$SERVER_NAME\" to Claude Code CLI (user scope)"
+  fi
+}
+
 # ──────────────────────────────── Verification ────────────────────────────
 verify_server() {
   [ -x "$LAUNCHER" ] && [ -n "$NODE_BIN" ] || return 0
@@ -509,6 +565,7 @@ main() {
   write_helpers
   server_args
   ensure_desktop_config
+  ensure_claude_code
   verify_server
 
   echo
@@ -535,6 +592,7 @@ main() {
     fi
   fi
   echo "    Check: Claude Desktop → Settings → Developer → \"$SERVER_NAME\" shows \"running\"."
+  [ -z "$(find_claude_cli)" ] || echo "           Claude Code CLI → \`claude mcp list\` (or /mcp in a new session) shows \"$SERVER_NAME\"."
 }
 
 main "$@"

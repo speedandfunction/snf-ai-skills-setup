@@ -1,8 +1,10 @@
-# Playwright MCP for Claude Desktop (macOS)
+# Playwright MCP for Claude Desktop and Claude Code (macOS)
 
-One command connects the [Playwright MCP](https://github.com/microsoft/playwright-mcp) browser connector to **Claude Desktop on macOS**. With it, Claude can open pages in Chrome (or Chromium), click, fill in forms, read page content and take screenshots.
+One command connects the [Playwright MCP](https://github.com/microsoft/playwright-mcp) browser connector to **Claude Desktop on macOS**, and also to the **Claude Code CLI** if `claude` is installed. With it, Claude can open pages in Chrome (or Chromium), click, fill in forms, read page content and take screenshots.
 
-The script installs anything that is missing, writes the connector into Claude Desktop's config, and then opens a test page to check that the server works.
+The script installs anything that is missing and writes the connector into Claude Desktop's config. It also registers the connector for Claude Code at user scope. Then it opens a test page to check that the server works.
+
+> Claude Desktop and Claude Code keep **separate** server lists. Claude Code never reads `claude_desktop_config.json`, which is why the script sets up both.
 
 ---
 
@@ -13,6 +15,8 @@ curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setu
 ```
 
 Then **quit Claude Desktop with Cmd+Q** (closing the window is not enough) and open it again. Go to **Settings → Developer**: the `playwright` server should show **running**.
+
+In the **Claude Code CLI**, run `claude mcp list`, or type `/mcp` in a **new** session. `playwright` should show as connected. Sessions that were already open do not pick it up.
 
 To use Chromium instead of Google Chrome (see [Chrome or Chromium](#chrome-or-chromium)):
 
@@ -46,6 +50,7 @@ To do everything by hand instead, follow [Manual installation](#manual-installat
 | 4a | With `PLAYWRIGHT_MCP_BROWSER=chromium`: downloads **Playwright's Chromium** instead of step 3 (~190 MB) | the build this `@playwright/mcp` version needs is already there |
 | 5 | Writes a small **launcher** that starts the server with a fixed Node path and working folder | the launcher is already up to date |
 | 6 | Adds the **`playwright`** server to `claude_desktop_config.json` | the entry is already identical |
+| 6a | Registers the same server for the **Claude Code CLI**: `claude mcp add --scope user`, so it works in every folder and in the Desktop app's Code tab | `claude` is not installed, or the entry is already identical |
 | 7 | **Verifies**: starts the server, does the MCP handshake, and opens a test page in the headless browser | — (always runs) |
 
 **Homebrew** is installed only if one of steps 1–3 needs it. Its installer asks for your macOS password, which requires an administrator account.
@@ -68,6 +73,7 @@ Each step checks first and does only what is missing, so you can re-run the scri
 | Server install (`@playwright/mcp` + launcher) | `~/.local/share/snf-playwright-mcp/` |
 | Screenshots, PDFs, downloads | `~/playwright-mcp/` |
 | Claude Desktop config | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Claude Code config (user scope, written by `claude mcp add`) | `~/.claude.json` |
 | Browser profile (logins and cookies are kept between sessions) | `~/Library/Caches/ms-playwright/mcp-chrome-*` |
 | Chromium (only with `PLAYWRIGHT_MCP_BROWSER=chromium`) | `~/Library/Caches/ms-playwright/chromium-<revision>/` |
 | Server log | `~/Library/Logs/Claude/mcp-server-playwright.log` |
@@ -311,14 +317,25 @@ node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); consol
 
 If you get an error instead of `JSON OK`, fix the place it points to, or restore the backup you made above.
 
-### Step 9. Restart Claude Desktop and check
+### Step 9. Claude Code CLI
+
+Skip this step if you do not use the Claude Code CLI (`claude`). Claude Code does not read the Desktop config, so register the same server for it:
+
+```bash
+claude mcp add --scope user playwright -- "$HOME/.local/share/snf-playwright-mcp/playwright-mcp" --browser chrome --output-dir "$HOME/playwright-mcp"
+claude mcp get playwright
+```
+
+For Chromium, write `chromium` instead of `chrome`. The second command should show `Status: ✔ Connected`. If a `playwright` entry already exists, first run `claude mcp remove playwright --scope user`.
+
+### Step 10. Restart Claude Desktop and check
 
 1. Quit Claude Desktop with **Cmd+Q**. Closing the window is not enough.
 2. Open it again and go to **Settings → Developer**. The `playwright` server should show **running**.
 3. If it shows **failed**, read `~/Library/Logs/Claude/mcp-server-playwright.log`.
 4. In a chat, ask: *"Open https://speedandfunction.com and summarise the home page."*
 
-### Step 10 (optional). Let the script confirm the setup
+### Step 11 (optional). Let the script confirm the setup
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/speedandfunction/snf-ai-skills-setup/main/playwright-mcp/playwright-mcp-setup.sh | bash -s -- --check
@@ -352,10 +369,11 @@ Re-run the quick-start command. It installs the newest `@playwright/mcp` (or the
 ## Removing
 
 1. Claude Desktop → **Settings → Developer → Edit Config**. Delete the `"playwright"` block and save.
-2. `rm -rf ~/.local/share/snf-playwright-mcp`
-3. Optional: `rm -rf ~/playwright-mcp ~/Library/Caches/ms-playwright/mcp-chrome-*` deletes saved files and browser logins.
-4. Chromium only: `rm -rf ~/Library/Caches/ms-playwright/chromium-*`. Skip this if other Playwright tools on the Mac use these builds.
-5. Restart Claude Desktop.
+2. Claude Code CLI: `claude mcp remove playwright --scope user`
+3. `rm -rf ~/.local/share/snf-playwright-mcp`
+4. Optional: `rm -rf ~/playwright-mcp ~/Library/Caches/ms-playwright/mcp-chrome-*` deletes saved files and browser logins.
+5. Chromium only: `rm -rf ~/Library/Caches/ms-playwright/chromium-*`. Skip this if other Playwright tools on the Mac use these builds.
+6. Restart Claude Desktop.
 
 Node, Chrome and Claude Desktop stay installed.
 
@@ -366,6 +384,8 @@ Node, Chrome and Claude Desktop stay installed.
 | Problem | Fix |
 | --- | --- |
 | `playwright` does not appear in Settings → Developer | Quit Claude Desktop fully with **Cmd+Q** and reopen it. The config is read only at startup. |
+| The Claude Code CLI does not see `playwright` | Re-run the script, or do manual step 9. It only takes effect in a **new** `claude` session. If the script said `claude` was not found, install Claude Code and re-run. |
+| Claude Code uses a different `playwright` in one project | That project defines its own `playwright` in `.mcp.json` or at local scope, and that overrides the user-scope entry. Check with `claude mcp get playwright` inside that folder. |
 | `playwright` shows **failed** | Run the `--check` command above. Then read `~/Library/Logs/Claude/mcp-server-playwright.log`. |
 | `Node not found at …` in the log | Node was moved or removed (for example, an nvm version was deleted). Re-run the script. |
 | "Browser is already in use" / profile is locked | Another Playwright session holds the profile. Close the leftover Chrome window it opened, or restart Claude Desktop. |
