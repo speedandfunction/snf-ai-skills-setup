@@ -7,7 +7,9 @@
 #   • Homebrew              — only if one of the items below has to be installed
 #   • Claude Desktop        — brew cask "claude"
 #   • Node.js >= 18         — brew formula "node"
-#   • Google Chrome         — brew cask "google-chrome" (the browser Playwright MCP drives)
+#   • Google Chrome         — brew cask "google-chrome" (the browser Playwright MCP drives),
+#                             or, with PLAYWRIGHT_MCP_BROWSER=chromium, Playwright's own
+#                             Chromium build instead (~190 MB, macOS 14+)
 #   • @playwright/mcp       — into its own folder, not a global npm install
 # Then writes the "playwright" server into Claude Desktop's config and checks that
 # the server starts and can actually open a page in Chrome.
@@ -21,6 +23,7 @@
 #   curl -fsSL .../playwright-mcp-setup.sh | bash -s -- --check     # verify only, change nothing
 #
 # Optional environment overrides (put them before `bash`):
+#   PLAYWRIGHT_MCP_BROWSER=chromium   # default: what the config already uses, else chrome
 #   PLAYWRIGHT_MCP_VERSION=0.0.83     # default: latest (re-running upgrades)
 #   PLAYWRIGHT_MCP_WORKSPACE=~/dir    # where screenshots/PDFs/downloads land (default: ~/playwright-mcp)
 #   PLAYWRIGHT_MCP_HOME=~/dir         # install folder (default: ~/.local/share/snf-playwright-mcp)
@@ -32,6 +35,8 @@ set -Eeuo pipefail
 SERVER_NAME="playwright"
 PKG="@playwright/mcp"
 PW_VERSION="${PLAYWRIGHT_MCP_VERSION:-latest}"
+BROWSER="${PLAYWRIGHT_MCP_BROWSER:-}"   # empty: keep what the config already uses, else chrome
+BROWSER_LABEL=""
 INSTALL_DIR="${PLAYWRIGHT_MCP_HOME:-$HOME/.local/share/snf-playwright-mcp}"
 WORKSPACE="${PLAYWRIGHT_MCP_WORKSPACE:-$HOME/playwright-mcp}"
 DESKTOP_CFG="${CLAUDE_DESKTOP_CONFIG:-$HOME/Library/Application Support/Claude/claude_desktop_config.json}"
@@ -77,8 +82,9 @@ Options:
   --check     verify the setup, change nothing
   -h, --help  this help
 
-Environment: PLAYWRIGHT_MCP_VERSION, PLAYWRIGHT_MCP_WORKSPACE,
-             PLAYWRIGHT_MCP_HOME, CLAUDE_DESKTOP_CONFIG (see README.md).
+Environment: PLAYWRIGHT_MCP_BROWSER (chrome | chromium), PLAYWRIGHT_MCP_VERSION,
+             PLAYWRIGHT_MCP_WORKSPACE, PLAYWRIGHT_MCP_HOME, CLAUDE_DESKTOP_CONFIG
+             (see README.md).
 EOF
 }
 
@@ -179,6 +185,24 @@ ensure_node() {
   esac
 }
 
+# ──────────────────────────────── Browser choice ──────────────────────────
+# Without PLAYWRIGHT_MCP_BROWSER, keep the browser the existing entry uses, so a
+# plain re-run (e.g. to update) never switches a Chromium setup back to Chrome.
+resolve_browser() {
+  if [ -z "$BROWSER" ] && [ -n "$NODE_BIN" ] && [ -f "$DESKTOP_CFG" ]; then
+    BROWSER="$("$NODE_BIN" -e '
+try {
+  const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).mcpServers[process.argv[2]].args;
+  const i = a.indexOf("--browser");
+  if (i >= 0 && a[i + 1] === "chromium") console.log("chromium");
+} catch (e) {}
+' "$DESKTOP_CFG" "$SERVER_NAME" 2>/dev/null || true)"
+    [ -z "$BROWSER" ] || ok "Browser: Chromium, kept from the current config (PLAYWRIGHT_MCP_BROWSER=chrome switches back)"
+  fi
+  BROWSER="${BROWSER:-chrome}"
+  if [ "$BROWSER" = "chromium" ]; then BROWSER_LABEL="Chromium"; else BROWSER_LABEL="Chrome"; fi
+}
+
 # ──────────────────────────────── Google Chrome ───────────────────────────
 # Playwright MCP's default browser is the "chrome" channel and looks for it in
 # /Applications only; a copy in ~/Applications is passed explicitly.
@@ -198,6 +222,46 @@ ensure_chrome() {
   fi
 }
 chrome_version() { defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "(version unknown)"; }
+
+# ──────────────────────────────── Chromium (opt-in) ───────────────────────
+# Playwright's own build ("Chrome for Testing"). It does not update itself: its
+# revision follows @playwright/mcp, so this runs on every pass and downloads only
+# when the revision the installed package needs is not there yet.
+
+# Prints "<version>|<directory>|yes|no" for the revision the installed package expects.
+chromium_info() {
+  "$NODE_BIN" -e '
+const path = require("path"), fs = require("fs"), os = require("os");
+const core = path.dirname(require.resolve("playwright-core/package.json", { paths: [path.dirname(process.argv[1])] }));
+const b = require(path.join(core, "browsers.json")).browsers.find((x) => x.name === "chromium");
+const env = process.env.PLAYWRIGHT_BROWSERS_PATH;
+const root = env === "0" ? path.join(core, ".local-browsers") : env || path.join(os.homedir(), "Library/Caches/ms-playwright");
+const dir = path.join(root, "chromium-" + b.revision);
+console.log(b.browserVersion + "|" + dir + "|" + (fs.existsSync(path.join(dir, "INSTALLATION_COMPLETE")) ? "yes" : "no"));
+' "$CLI_JS" 2>/dev/null || true
+}
+
+ensure_chromium() {
+  local info version dir
+  [ -f "$CLI_JS" ] || return 0   # --check on a fresh Mac: the missing package is already reported
+  info="$(chromium_info)"
+  [ -n "$info" ] || die "Could not read Playwright's browser list from $INSTALL_DIR. Delete that folder and re-run."
+  version="${info%%|*}"; dir="${info#*|}"; dir="${dir%|*}"
+  if [ "${info##*|}" = "yes" ]; then
+    ok "Chromium $version (Playwright build) in $dir"
+    return
+  fi
+  if [ "$CHECK_ONLY" -eq 1 ]; then
+    bad "Chromium $version (Playwright build) not installed — expected in $dir"
+    return
+  fi
+  log "Downloading Chromium $version (Playwright build, ~190 MB download, ~370 MB on disk)…"
+  "$NODE_BIN" "$CLI_JS" install-browser chromium --no-shell </dev/null \
+    || die "Chromium download failed. Check the network/VPN and re-run."
+  [ "$(chromium_info | sed 's/.*|//')" = "yes" ] || die "Chromium download finished but $dir is incomplete. Re-run the script."
+  ok "Chromium $version installed in $dir"
+  CHANGED_RUNTIME=1
+}
 
 # ──────────────────────────────── @playwright/mcp ─────────────────────────
 installed_pkg_version() {
@@ -250,6 +314,8 @@ launcher_content() {
   echo '# Generated by playwright-mcp-setup.sh (speedandfunction/snf-ai-skills-setup).'
   echo '# Do not edit: re-run the setup script, it rewrites this file.'
   printf '[ -x %q ] || { echo "playwright-mcp: Node not found at %s. Re-run playwright-mcp-setup.sh." >&2; exit 1; }\n' "$NODE_BIN" "$NODE_BIN"
+  # Claude Desktop does not see shell variables; keep a custom browser location visible to it.
+  [ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ] || printf 'export PLAYWRIGHT_BROWSERS_PATH=%q\n' "$PLAYWRIGHT_BROWSERS_PATH"
   printf 'mkdir -p %q && cd %q || exit 1\n' "$WORKSPACE" "$WORKSPACE"
   printf 'exec %q %q "$@"\n' "$NODE_BIN" "$CLI_JS"
 }
@@ -351,7 +417,7 @@ JS
 
 # ──────────────────────────────── Claude Desktop config ───────────────────
 server_args() {
-  SERVER_ARGS=(--browser chrome --output-dir "$WORKSPACE")
+  SERVER_ARGS=(--browser "$BROWSER" --output-dir "$WORKSPACE")
   [ -z "$CHROME_EXEC" ] || SERVER_ARGS+=(--executable-path "$CHROME_EXEC")
 }
 
@@ -393,14 +459,14 @@ verify_server() {
     bad "Launcher failed: $out"
     return
   fi
-  log "Opening a test page in headless Chrome (takes a few seconds)…"
+  log "Opening a test page in headless $BROWSER_LABEL (takes a few seconds)…"
   # --isolated: never touch the persistent profile Claude Desktop may be using.
   # Own --output-dir: keep the test's page snapshot out of the user's folder.
-  local smoke_args=(--browser chrome --output-dir "$HELPERS/out" --headless --isolated)
+  local smoke_args=(--browser "$BROWSER" --output-dir "$HELPERS/out" --headless --isolated)
   [ -z "$CHROME_EXEC" ] || smoke_args+=(--executable-path "$CHROME_EXEC")
   out="$("$NODE_BIN" "$HELPERS/smoke.js" "$LAUNCHER" "${smoke_args[@]}" 2>&1 || true)"
   if [[ "$out" == *BROWSER=ok* ]]; then
-    ok "MCP handshake OK, $(printf '%s\n' "$out" | sed -n 's/^TOOLS=//p') tools, Chrome opened a page"
+    ok "MCP handshake OK, $(printf '%s\n' "$out" | sed -n 's/^TOOLS=//p') tools, $BROWSER_LABEL opened a page"
   else
     bad "Browser check failed:"
     printf '%s\n' "$out" | sed 's/^/      /' >&2
@@ -420,16 +486,25 @@ main() {
 
   [ "$(uname -s)" = "Darwin" ] || die "This script is for macOS (found $(uname -s))."
   [ "$(id -u)" -ne 0 ] || die "Do not run this with sudo — it configures your own user account."
+  case "$BROWSER" in
+    ""|chrome) ;;
+    chromium)
+      [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 14 ] \
+        || die "Playwright's Chromium needs macOS 14 or newer (this Mac: $(sw_vers -productVersion)). Run without PLAYWRIGHT_MCP_BROWSER to use Google Chrome." ;;
+    *) die "PLAYWRIGHT_MCP_BROWSER must be chrome or chromium (got: $BROWSER)." ;;
+  esac
 
   log "Playwright MCP for Claude Desktop — macOS $(sw_vers -productVersion) ($(uname -m))$([ "$CHECK_ONLY" -eq 1 ] && echo ', check only')"
 
   ensure_claude
   ensure_node
-  ensure_chrome
+  resolve_browser
+  [ "$BROWSER" = "chromium" ] || ensure_chrome
   if [ -z "$NODE_BIN" ]; then
     die "Node.js is required for the remaining checks. Run without --check to install it."
   fi
   ensure_package
+  [ "$BROWSER" = "chrome" ] || ensure_chromium
   ensure_launcher
   write_helpers
   server_args
@@ -443,6 +518,11 @@ main() {
     exit 1
   fi
   ok "${C_BOLD}Playwright MCP is set up for Claude Desktop${C_RESET}"
+  if [ "$BROWSER" = "chromium" ]; then
+    echo "    Browser:    Chromium (Playwright build — re-run this script now and then for security updates)"
+  else
+    echo "    Browser:    Google Chrome"
+  fi
   echo "    Config:     $DESKTOP_CFG"
   echo "    Files land: $WORKSPACE"
   if [ "$CHECK_ONLY" -eq 0 ] && [ "$CHANGED_RUNTIME" -eq 1 ]; then
