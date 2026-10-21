@@ -399,7 +399,7 @@ verify_server() {
   local smoke_args=(--browser chrome --output-dir "$HELPERS/out" --headless --isolated)
   [ -z "$CHROME_EXEC" ] || smoke_args+=(--executable-path "$CHROME_EXEC")
   out="$("$NODE_BIN" "$HELPERS/smoke.js" "$LAUNCHER" "${smoke_args[@]}" 2>&1 || true)"
-  if printf '%s\n' "$out" | grep -q '^BROWSER=ok'; then
+  if [[ "$out" == *BROWSER=ok* ]]; then
     ok "MCP handshake OK, $(printf '%s\n' "$out" | sed -n 's/^TOOLS=//p') tools, Chrome opened a page"
   else
     bad "Browser check failed:"
@@ -447,7 +447,8 @@ main() {
   echo "    Files land: $WORKSPACE"
   if [ "$CHECK_ONLY" -eq 0 ] && [ "$CHANGED_RUNTIME" -eq 1 ]; then
     echo
-    if ps -axo comm= | grep -q '/Claude\.app/Contents/MacOS/Claude$'; then
+    # No `grep -q`: it exits on the first match, ps gets SIGPIPE and pipefail reports failure.
+    if ps -axo comm= | grep '/Claude\.app/Contents/MacOS/Claude$' >/dev/null; then
       warn "Claude Desktop is running: quit it fully (Cmd+Q) and open it again to load the change."
     else
       echo "    Open Claude Desktop — the \"$SERVER_NAME\" server starts with it."
