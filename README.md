@@ -78,6 +78,7 @@ If any step fails, the script **stops there** with an actionable message. It nev
 | Document | Description |
 | --- | --- |
 | [`docs/SETUP-GUIDE.md`](docs/SETUP-GUIDE.md) | Full guide (English) — detailed steps, troubleshooting, FAQ |
+| [`playwright-mcp/`](playwright-mcp/README.md) | Playwright browser connector for Claude Desktop (macOS) — one-command setup |
 
 
 ---
